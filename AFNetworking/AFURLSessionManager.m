@@ -38,7 +38,9 @@ static dispatch_queue_t url_session_manager_creation_queue() {
     return af_url_session_manager_creation_queue;
 }
 
+// 使用静态函数而非'#define'定义'block',可以增加代码的可读性
 static void url_session_manager_create_task_safely(dispatch_block_t block) {
+    // 创建任务队列为串行队列,如果iOS及以上直接调用创建的block即可,为了解决iOS8以下的某个bug,在iOS8已经解决
     if (NSFoundationVersionNumber < NSFoundationVersionNumber_With_Fixed_5871104061079552_bug) {
         // Fix of bug
         // Open Radar:http://openradar.appspot.com/radar?id=5871104061079552 (status: Fixed in iOS8)
@@ -50,6 +52,7 @@ static void url_session_manager_create_task_safely(dispatch_block_t block) {
 }
 
 static dispatch_queue_t url_session_manager_processing_queue() {
+    // manager处理队列为并行队列
     static dispatch_queue_t af_url_session_manager_processing_queue;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -110,7 +113,7 @@ typedef void (^AFURLSessionTaskCompletionHandler)(NSURLResponse *response, id re
 
 
 #pragma mark -
-
+//
 @interface AFURLSessionManagerTaskDelegate : NSObject <NSURLSessionTaskDelegate, NSURLSessionDataDelegate, NSURLSessionDownloadDelegate>
 - (instancetype)initWithTask:(NSURLSessionTask *)task;
 @property (nonatomic, weak) AFURLSessionManager *manager;
@@ -216,7 +219,7 @@ didCompleteWithError:(NSError *)error
 
     if (error) {
         userInfo[AFNetworkingTaskDidCompleteErrorKey] = error;
-
+        // 设计completionGroup的原因:每个task的完成结果(无论成功与否)都通过dispatch_group_async(异步调度一个块以供执行，并同时将其与指定的调度组关联。)来与completionGroup和completionQueue绑定,使得外界可以使用dispatch_group_notify去获得一组任务完成的时机
         dispatch_group_async(manager.completionGroup ?: url_session_manager_completion_group(), manager.completionQueue ?: dispatch_get_main_queue(), ^{
             if (self.completionHandler) {
                 self.completionHandler(task.response, responseObject, error);
@@ -392,6 +395,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
             Class superClass = [currentClass superclass];
             IMP classResumeIMP = method_getImplementation(class_getInstanceMethod(currentClass, @selector(resume)));
             IMP superclassResumeIMP = method_getImplementation(class_getInstanceMethod(superClass, @selector(resume)));
+            // 由于'NSURLSessionTask'是由类簇实现的,无法获取到其真实的类,且在iOS7,iOS8中实现不同,使得代码统一行为变得困难,因此在'resume'的当前类实现不等于'resume'的父类实现，且'resume'的当前实现不等于'af_resume'的初始实现的情况下,需要对当前类实现进行swizzling
             if (classResumeIMP != superclassResumeIMP &&
                 originalAFResumeIMP != classResumeIMP) {
                 [self swizzleResumeAndSuspendMethodForClass:currentClass];
@@ -404,6 +408,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     }
 }
 
+// 事先在一个虚拟类中实现'af_resume'函数,在需要的时候将此函数的实现添加到指定类中,并在指定情况下swizzling其指定类原实现
 + (void)swizzleResumeAndSuspendMethodForClass:(Class)theClass {
     Method afResumeMethod = class_getInstanceMethod(self, @selector(af_resume));
     Method afSuspendMethod = class_getInstanceMethod(self, @selector(af_suspend));
@@ -417,26 +422,31 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     }
 }
 
+// 实际上不会调用到该虚拟类的'state'函数实现,在'af_resume'中调用的'[self state]'实际上是发生在'NSURLSessionTask'中,具体的函数实现并不是当前虚拟类的'state',添加该函数实现是为了'af_resume'的函数实现更优雅
 - (NSURLSessionTaskState)state {
     NSAssert(NO, @"State method should never be called in the actual dummy class");
     return NSURLSessionTaskStateCanceling;
 }
 
+// 重写resume(开启)方法
 - (void)af_resume {
     NSAssert([self respondsToSelector:@selector(state)], @"Does not respond to state");
     NSURLSessionTaskState state = [self state];
     [self af_resume];
     
+    // 通知外界'task'的启动时机
     if (state != NSURLSessionTaskStateRunning) {
         [[NSNotificationCenter defaultCenter] postNotificationName:AFNSURLSessionTaskDidResumeNotification object:self];
     }
 }
 
+// 重写suspend(暂停)方法
 - (void)af_suspend {
     NSAssert([self respondsToSelector:@selector(state)], @"Does not respond to state");
     NSURLSessionTaskState state = [self state];
     [self af_suspend];
     
+    // 通知外界'task'的暂停时机
     if (state != NSURLSessionTaskStateSuspended) {
         [[NSNotificationCenter defaultCenter] postNotificationName:AFNSURLSessionTaskDidSuspendNotification object:self];
     }
@@ -444,7 +454,10 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
 @end
 
 #pragma mark -
-
+// AFURLSessionManager做了什么?
+// 'AFNetworking'创建和管理基于特定的'NSURLSessionConfiguration'的'NSURLSession',并且实现了`<NSURLSessionTaskDelegate>`, `<NSURLSessionDataDelegate>`, `<NSURLSessionDownloadDelegate>`, 和 `<NSURLSessionDelegate>`等delegate协议
+// 并且管理由'NSURLSession'创建的'NSURLSessionTask',将其封装为'AFURLSessionManagerTaskDelegate'来处理每个'task'的具体操作.每个'task'用一个可变的字典'mutableTaskDelegatesKeyedByTaskIdentifier'来管理,在设置,读取以及删除字典中某个'task'的时候,都需要通过加锁来确保数据读写的安全准确性.使用'taskIdentifier'来作为'task'的唯一标识.
+// 每一次'delegate'的回调,都是通过'AFURLSessionManager'接收后,派发给具体'task'对应的'AFURLSessionManagerTaskDelegate',在'AFURLSessionManagerTaskDelegate'内部进行以任务粒度划分的处理.'AFURLSessionManager'不直接做相关的逻辑处理.
 @interface AFURLSessionManager ()
 @property (readwrite, nonatomic, strong) NSURLSessionConfiguration *sessionConfiguration;
 @property (readwrite, nonatomic, strong) NSOperationQueue *operationQueue;
@@ -505,6 +518,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     self.lock = [[NSLock alloc] init];
     self.lock.name = AFURLSessionManagerLockName;
 
+    // 获取未完成的任务加入队列
     [self.session getTasksWithCompletionHandler:^(NSArray *dataTasks, NSArray *uploadTasks, NSArray *downloadTasks) {
         for (NSURLSessionDataTask *task in dataTasks) {
             [self addDelegateForDataTask:task uploadProgress:nil downloadProgress:nil completionHandler:nil];
@@ -523,6 +537,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
 }
 
 - (void)dealloc {
+    // 移除通知监听
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
@@ -533,6 +548,8 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
 }
 
 - (void)taskDidResume:(NSNotification *)notification {
+    // 将'task'的开始和暂停通知外界
+    // 以'task.taskDescription'作区分,当存在多个'AFURLSessionManager'做监听者的时候,一个'task'的开启.暂停事件通知 只会发送一次
     NSURLSessionTask *task = notification.object;
     if ([task respondsToSelector:@selector(taskDescription)]) {
         if ([task.taskDescription isEqualToString:self.taskDescriptionForSessionTasks]) {
@@ -584,6 +601,11 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
               downloadProgress:(nullable void (^)(NSProgress *downloadProgress)) downloadProgressBlock
              completionHandler:(void (^)(NSURLResponse *response, id responseObject, NSError *error))completionHandler
 {
+    // 由'NSURLSessionTask'生成'AFURLSessionManagerTaskDelegate'的流程
+    // #1 生成'task'对应的'delegate',设置'manager'及完成回调
+    // #2 设置'task'的描述为'AFURLSessionManager'自身的内存地址(以'task.taskDescription'作区分,当存在多个'AFURLSessionManager'做监听者的时候,一个'task'的开启.暂停事件通知 只会发送一次)
+    // #3 将'delegate'及'dataTask'进行绑定,交由'AFURLSessionManager'进行管理
+    // #4 设置上传进度及下载进度回调
     AFURLSessionManagerTaskDelegate *delegate = [[AFURLSessionManagerTaskDelegate alloc] initWithTask:dataTask];
     delegate.manager = self;
     delegate.completionHandler = completionHandler;
@@ -619,6 +641,8 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     delegate.manager = self;
     delegate.completionHandler = completionHandler;
 
+    // 'destination'的作用为指定资源下载的存储位置
+    // 如果在iOS上使用background模式的'NSURLSessionConfiguration'，这些block将在应用程序终止时丢失。后台会话应该使用' -setDownloadTaskDidFinishDownloadingBlock: '来指定保存下载文件的URL，而不是该函数的回调block。
     if (destination) {
         delegate.downloadTaskDidFinishDownloading = ^NSURL * (NSURLSession * __unused session, NSURLSessionDownloadTask *task, NSURL *location) {
             return destination(location, task.response);
@@ -654,12 +678,14 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
         } else if ([keyPath isEqualToString:NSStringFromSelector(@selector(downloadTasks))]) {
             tasks = downloadTasks;
         } else if ([keyPath isEqualToString:NSStringFromSelector(@selector(tasks))]) {
+            // 使用'KVC'集合操作符将数组拍平(获取操作对象(数组)中的所有元素,然后装到一个新的数组中并返回,不会对这个数组去重.)
             tasks = [@[dataTasks, uploadTasks, downloadTasks] valueForKeyPath:@"@unionOfArrays.self"];
         }
 
         dispatch_semaphore_signal(semaphore);
     }];
-
+    
+    // 异步变同步,等待'semaphore'信号量
     dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
 
     return tasks;
@@ -684,6 +710,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
 #pragma mark -
 
 - (void)invalidateSessionCancelingTasks:(BOOL)cancelPendingTasks {
+    // 根据是否取消未完成的任务来决定'session'的关闭时机
     if (cancelPendingTasks) {
         [self.session invalidateAndCancel];
     } else {
@@ -723,6 +750,10 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
                              downloadProgress:(nullable void (^)(NSProgress *downloadProgress)) downloadProgressBlock
                             completionHandler:(nullable void (^)(NSURLResponse *response, id _Nullable responseObject,  NSError * _Nullable error))completionHandler {
 
+    // 普通的task创建流程
+    // #1 创建'NSURLRequest'对应的'NSURLSessionDataTask'(由参数不同,使用不同的初始化方法)
+    // #2 将task及对应的'uploadProgressBlock','downloadProgressBlock','completionHandler'交由'AFURLSessionManager'管理(生成task对应的'AFURLSessionManagerTaskDelegate'统一管理)
+    // #3 返回对应的task实体
     __block NSURLSessionDataTask *dataTask = nil;
     url_session_manager_create_task_safely(^{
         dataTask = [self.session dataTaskWithRequest:request];
@@ -742,6 +773,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
 {
     __block NSURLSessionUploadTask *uploadTask = nil;
     url_session_manager_create_task_safely(^{
+        // 在iOS7上由'uploadTaskWithRequest:fromFile:'创建的'task'可能为空,所以添加重试机制
         uploadTask = [self.session uploadTaskWithRequest:request fromFile:fileURL];
         
         // uploadTask may be nil on iOS7 because uploadTaskWithRequest:fromFile: may return nil despite being documented as nonnull (https://devforums.apple.com/message/926113#926113)
