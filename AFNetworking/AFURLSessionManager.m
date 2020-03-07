@@ -116,7 +116,9 @@ typedef void (^AFURLSessionTaskCompletionHandler)(NSURLResponse *response, id re
 //
 @interface AFURLSessionManagerTaskDelegate : NSObject <NSURLSessionTaskDelegate, NSURLSessionDataDelegate, NSURLSessionDownloadDelegate>
 - (instancetype)initWithTask:(NSURLSessionTask *)task;
+// 弱应用,不会造成循环引用
 @property (nonatomic, weak) AFURLSessionManager *manager;
+// 用以记录和拼接'session'返回的'data'
 @property (nonatomic, strong) NSMutableData *mutableData;
 @property (nonatomic, strong) NSProgress *uploadProgress;
 @property (nonatomic, strong) NSProgress *downloadProgress;
@@ -134,6 +136,8 @@ typedef void (^AFURLSessionTaskCompletionHandler)(NSURLResponse *response, id re
     if (!self) {
         return nil;
     }
+    // #1 初始化'mutableData'和'progress'属性
+    // #2 设置'uploadProgress'及'downloadProgress'的取消,暂停,启动回调,使用KVO添加进度回调
     
     _mutableData = [NSMutableData data];
     _uploadProgress = [[NSProgress alloc] initWithParent:nil userInfo:nil];
@@ -232,6 +236,9 @@ didCompleteWithError:(NSError *)error
     } else {
         dispatch_async(url_session_manager_processing_queue(), ^{
             NSError *serializationError = nil;
+            // 序列化接收到的数据
+            // 'task.response' 响应头
+            // 'data' 响应数据
             responseObject = [manager.responseSerializer responseObjectForResponse:task.response data:data error:&serializationError];
 
             if (self.downloadFileURL) {
@@ -268,6 +275,7 @@ didCompleteWithError:(NSError *)error
     self.downloadProgress.totalUnitCount = dataTask.countOfBytesExpectedToReceive;
     self.downloadProgress.completedUnitCount = dataTask.countOfBytesReceived;
 
+    // 拼接接收到的'data'
     [self.mutableData appendData:data];
 }
 
@@ -939,6 +947,7 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     return [NSString stringWithFormat:@"<%@: %p, session: %@, operationQueue: %@>", NSStringFromClass([self class]), self, self.session, self.operationQueue];
 }
 
+// 针对'URLSession:task:willPerformHTTPRedirection:newRequest:completionHandler:','URLSession:dataTask:didReceiveResponse:completionHandler:','URLSession:dataTask:willCacheResponse:completionHandler:','URLSessionDidFinishEventsForBackgroundURLSession:'等函数,根据有没有实际的处理block来返回'respondsToSelector'的结果
 - (BOOL)respondsToSelector:(SEL)selector {
     if (selector == @selector(URLSession:task:willPerformHTTPRedirection:newRequest:completionHandler:)) {
         return self.taskWillPerformHTTPRedirection != nil;
