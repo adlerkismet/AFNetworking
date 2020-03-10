@@ -66,6 +66,12 @@
 - (instancetype)initWithBaseURL:(NSURL *)url
            sessionConfiguration:(NSURLSessionConfiguration *)configuration
 {
+    /**
+     # 'AFHTTPSessionManager'初始化流程
+     #1 确保'url'的有效性,使用'baseURL'的时候,必须使用'http://example.com/'格式
+     #2 设置'baseURL'属性
+     #3 设置'requestSerializer'和'responseSerializer'
+     */
     self = [super initWithSessionConfiguration:configuration];
     if (!self) {
         return nil;
@@ -98,6 +104,15 @@
     [super setResponseSerializer:responseSerializer];
 }
 
+/**
+ 此处'@dynamic'的用法
+ #1 头文件要声明'securityPolicy',但其父类'AFURLSessionManager'以生成该属性的'setter'及'getter'
+ #2 添加'@dynamic'告诉编译器无需自动生成'getter'和'setter'方法,由其他地方实现,可以手动写实现也可以由父类实现.
+ #3 如果此处无需在头文件声明'securityPolicy'来说明与其父类实现的不同,则'@dynamic'可以省去
+ #4 '@dynamic'与'@synthesize'的根本区别
+     在编译期间是否自动生成访问器函数(setter和getter)
+     '@synthesize'会为你的属性生成'getter'和'setter'方法。'@dynamic'只是告诉编译器'getter'和'setter'方法不是由自动生成的，而是其他方式实现的(比如超类或自己写实现)
+ */
 @dynamic securityPolicy;
 
 - (void)setSecurityPolicy:(AFSecurityPolicy *)securityPolicy {

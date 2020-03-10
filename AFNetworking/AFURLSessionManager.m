@@ -965,6 +965,11 @@ static NSString * const AFNSURLSessionTaskDidSuspendNotification = @"com.alamofi
     return [[self class] instancesRespondToSelector:selector];
 }
 
+// 将'NSURLSessionDelegate'等delegate回调转block
+// #1 将对应事件的block回调设置给'AFURLSessionManager'持有
+// #2 如果是与task相关的事件,将对应事件派发给'AFURLSessionManagerTaskDelegate'处理
+// #3 在delegate的实现中,调用对应事件的block回调或实现一些默认处理(如处理HTTPS认证时候的默认处理)
+// #4 如果是头文件已经声明的事件通知,通过'NSNotificationCenter'发送通知告诉外界
 #pragma mark - NSURLSessionDelegate
 
 - (void)URLSession:(NSURLSession *)session

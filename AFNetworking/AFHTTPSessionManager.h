@@ -33,6 +33,16 @@
 
 #import "AFURLSessionManager.h"
 
+/*
+ 如何拓展'AFURLSessionManager'?以'AFHTTPSessionManager'为例子
+ #1 重载函数`dataTaskWithRequest:uploadProgress:downloadProgress:completionHandler:`,改变任务构建方式的行为,添加'GET'/'POST'/等便利方法
+ #2 修改序列化方式,包括'AFURLRequestSerialization'和'AFURLResponseSerialization',使请求包括默认的头部和编码属性(来源于'requestSerializer'属性),'responseSerializers'会自动分析由服务端返回的'response'是否合法及对其解码
+ #3 对于HTTP便利创建的方法，请求序列化器在提供url时，使用' NSURL +URLWithString:relativeToURL: '从路径构造相对于' -baseURL '的url。如果' baseURL '是' nil '， ' path '需要使用' NSURL +URLWithString: '来解析一个有效的' NSURL '对象。
+    注意: 后面的斜杠需要被添加到任何没有斜杠的'baseURL'中。否则，在使用没有前导斜杠的路径构造url时，将会导致意外的行为。
+ #4 创建一个后台session的'manager',需要一直被持有,可以创建一个应用程序范围的(即由程序持有)或共享的单例实例来实现。
+ */
+
+
 /**
  `AFHTTPSessionManager` is a subclass of `AFURLSessionManager` with convenience methods for making HTTP requests. When a `baseURL` is provided, requests made with the `GET` / `POST` / et al. convenience methods can be made with relative paths.
 
