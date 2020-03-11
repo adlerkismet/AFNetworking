@@ -44,6 +44,7 @@ typedef NSString * (^AFQueryStringSerializationBlock)(NSURLRequest *request, id 
     - parameter string: The string to be percent-escaped.
     - returns: The percent-escaped string.
  */
+// 将字符串转为'RFC 3986标准'的百分号编码(URL编码),为了查询参数的key或value
 NSString * AFPercentEscapedStringFromString(NSString *string) {
     static NSString * const kAFCharactersGeneralDelimitersToEncode = @":#[]@"; // does not include "?" or "/" due to RFC 3986 - Section 3.4
     static NSString * const kAFCharactersSubDelimitersToEncode = @"!$&'()*+,;=";
@@ -54,12 +55,14 @@ NSString * AFPercentEscapedStringFromString(NSString *string) {
 	// FIXME: https://github.com/AFNetworking/AFNetworking/pull/3028
     // return [string stringByAddingPercentEncodingWithAllowedCharacters:allowedCharacterSet];
 
+    // 分批处理的大小
     static NSUInteger const batchSize = 50;
 
     NSUInteger index = 0;
     NSMutableString *escaped = @"".mutableCopy;
 
     while (index < string.length) {
+        // 每次处理的字符长度不能超过'batchSize'
         NSUInteger length = MIN(string.length - index, batchSize);
         NSRange range = NSMakeRange(index, length);
 
@@ -67,6 +70,7 @@ NSString * AFPercentEscapedStringFromString(NSString *string) {
         range = [string rangeOfComposedCharacterSequencesForRange:range];
 
         NSString *substring = [string substringWithRange:range];
+        // 将压缩的字符重新使用百分号编码方式编码
         NSString *encoded = [substring stringByAddingPercentEncodingWithAllowedCharacters:allowedCharacterSet];
         [escaped appendString:encoded];
 
@@ -77,7 +81,7 @@ NSString * AFPercentEscapedStringFromString(NSString *string) {
 }
 
 #pragma mark -
-
+// 查询参数 key-value
 @interface AFQueryStringPair : NSObject
 @property (readwrite, nonatomic, strong) id field;
 @property (readwrite, nonatomic, strong) id value;
@@ -117,6 +121,11 @@ FOUNDATION_EXPORT NSArray * AFQueryStringPairsFromDictionary(NSDictionary *dicti
 FOUNDATION_EXPORT NSArray * AFQueryStringPairsFromKeyAndValue(NSString *key, id value);
 
 NSString * AFQueryStringFromParameters(NSDictionary *parameters) {
+    /**
+     参数字典转为查询字符的过程
+     #1 将'parameters'字典中的内容转为'AFQueryStringPair'格式的查询字符对,将查询字符对转为URL编码形式的'URLEncodedStringValue',并一个个添加到'mutablePairs'数组里
+     #2 将'mutablePairs'中的字符串用'&'拼接
+     */
     NSMutableArray *mutablePairs = [NSMutableArray array];
     for (AFQueryStringPair *pair in AFQueryStringPairsFromDictionary(parameters)) {
         [mutablePairs addObject:[pair URLEncodedStringValue]];
@@ -129,6 +138,9 @@ NSArray * AFQueryStringPairsFromDictionary(NSDictionary *dictionary) {
     return AFQueryStringPairsFromKeyAndValue(nil, dictionary);
 }
 
+/**
+ 使用递归的方法,将每对key/value(包括各种'NSDictionary'/'NSArray'/'NSSet')拼接成字符串形式存进数组
+ */
 NSArray * AFQueryStringPairsFromKeyAndValue(NSString *key, id value) {
     NSMutableArray *mutableQueryStringComponents = [NSMutableArray array];
 
@@ -172,6 +184,10 @@ NSArray * AFQueryStringPairsFromKeyAndValue(NSString *key, id value) {
 #pragma mark -
 
 static NSArray * AFHTTPRequestSerializerObservedKeyPaths() {
+    /**
+     使用'NSStringFromSelector(@selector(cachePolicy))'的方式来获取keyPath,编译器会做一个简单的检查,检查该selector是否存在,避免硬编码或者字符串拼错
+     注意: 写在.m文件中的静态函数,其可见范围为该文件内(包括.h头文件),在该文件内可调用的selector均可用'@selector(foo)'的形式获取到
+     */
     static NSArray *_AFHTTPRequestSerializerObservedKeyPaths = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -198,6 +214,13 @@ static void *AFHTTPRequestSerializerObserverContext = &AFHTTPRequestSerializerOb
 }
 
 - (instancetype)init {
+    /**
+     'AFHTTPRequestSerializer'初始化流程
+     #1 设置编码格式,请求头修改队列
+     #2 设置'Accept-Language HTTP Header'和'User-Agent Header'等请求头信息
+     #3 设置需要把参数编码在URI的'HTTP METHOD'集合
+     #4 对部分'NSMutableURLRequest'属性添加KVO监听
+     */
     self = [super init];
     if (!self) {
         return nil;
@@ -242,6 +265,7 @@ static void *AFHTTPRequestSerializerObserverContext = &AFHTTPRequestSerializerOb
 
     self.mutableObservedChangedKeyPaths = [NSMutableSet set];
     for (NSString *keyPath in AFHTTPRequestSerializerObservedKeyPaths()) {
+        // 检查是否存在该selector
         if ([self respondsToSelector:NSSelectorFromString(keyPath)]) {
             [self addObserver:self forKeyPath:keyPath options:NSKeyValueObservingOptionNew context:AFHTTPRequestSerializerObserverContext];
         }
@@ -300,7 +324,13 @@ static void *AFHTTPRequestSerializerObserverContext = &AFHTTPRequestSerializerOb
 }
 
 #pragma mark -
-
+/**
+ 设置/读取HTTP请求头 系列函数
+ 通过'requestHeaderModificationQueue'这个并行队列来对'self.mutableHTTPRequestHeaders'进行读写操作
+ 注意点: #1 读的时候,使用'dispatch_sync'同步到并行队列取当前的请求头
+        #2 写的时候,使用'dispatch_barrier_async'异步到并行队列用'barrier'隔绝其他读的操作
+        #3 用并行队列来实现多线程读写操作,适合这种多读少写的情况
+ */
 - (NSDictionary *)HTTPRequestHeaders {
     NSDictionary __block *value;
     dispatch_sync(self.requestHeaderModificationQueue, ^{
@@ -328,6 +358,12 @@ forHTTPHeaderField:(NSString *)field
 - (void)setAuthorizationHeaderFieldWithUsername:(NSString *)username
                                        password:(NSString *)password
 {
+    /**
+     请求头认证设置
+     #1 将账号密码以"username:password"的格式用'UTF8'编码成'NSData'
+     #2 将'data'转为'base64'格式
+     #3 拼接成"Basic base64AuthCredentials"设置到"Authorization"
+     */
     NSData *basicAuthCredentials = [[NSString stringWithFormat:@"%@:%@", username, password] dataUsingEncoding:NSUTF8StringEncoding];
     NSString *base64AuthCredentials = [basicAuthCredentials base64EncodedStringWithOptions:(NSDataBase64EncodingOptions)0];
     [self setValue:[NSString stringWithFormat:@"Basic %@", base64AuthCredentials] forHTTPHeaderField:@"Authorization"];
@@ -357,6 +393,13 @@ forHTTPHeaderField:(NSString *)field
                                 parameters:(id)parameters
                                      error:(NSError *__autoreleasing *)error
 {
+    /**
+     通过HTTPMethod/URL/parameters生成对应'NSMutableURLRequest'过程
+     #1 检查参数
+     #2 设置HTTPMethod
+     #3 检查是否有'NSMutableURLRequest'属性改变,若有,设置新值
+     #4 序列化请求
+     */
     NSParameterAssert(method);
     NSParameterAssert(URLString);
 
@@ -367,6 +410,7 @@ forHTTPHeaderField:(NSString *)field
     NSMutableURLRequest *mutableRequest = [[NSMutableURLRequest alloc] initWithURL:url];
     mutableRequest.HTTPMethod = method;
 
+    // 使用KVO和'mutableObservedChangedKeyPaths'记录改变的'keyPath',在'requestWithMethod:URLString:parameters:error:'时赋新值
     for (NSString *keyPath in AFHTTPRequestSerializerObservedKeyPaths()) {
         if ([self.mutableObservedChangedKeyPaths containsObject:keyPath]) {
             [mutableRequest setValue:[self valueForKeyPath:keyPath] forKey:keyPath];
@@ -384,7 +428,16 @@ forHTTPHeaderField:(NSString *)field
                               constructingBodyWithBlock:(void (^)(id <AFMultipartFormData> formData))block
                                                   error:(NSError *__autoreleasing *)error
 {
+    /**
+     'multipart/form-data'请求生成流程
+     #1 检验参数
+     #2 生成'HTTPMethod'和'URLString'对应的'NSMutableURLRequest',并打包为'AFStreamingMultipartFormData'形式的'formData',方便后续'parameters'的处理
+     #3 将每个请求参数的'key-value'的'value'都转化为'NSData'的格式,并添加到'formData'中(由'formData'中的'bodyStram'持有每一个请求参数)
+     #4 将'formData'通过'block'形式回调给外界,提供外界修改的时机
+     #5 通过对'formData'进行最后处理,包括设置'HTTPBodyStream'开始和结束的边界,设置'HTTPBodyStream'属性,设置请求头为'multipart/form-data'以及最终的'Content-Length',返回最终的'NSMutableURLRequest'
+     */
     NSParameterAssert(method);
+    // 'GET'和'HEAD'不能使用'multipart/form-data'请求头
     NSParameterAssert(![method isEqualToString:@"GET"] && ![method isEqualToString:@"HEAD"]);
 
     NSMutableURLRequest *mutableRequest = [self requestWithMethod:method URLString:URLString parameters:nil error:error];
@@ -419,6 +472,13 @@ forHTTPHeaderField:(NSString *)field
                              writingStreamContentsToFile:(NSURL *)fileURL
                                        completionHandler:(void (^)(NSError *error))handler
 {
+    /**
+     将原来request中的HTTPBodyStream内容异步写入到指定文件中，随后调用completionHandler处理。最后返回新的request。
+     #1 检查参数
+     #2 生成对应的'inputStream'和'outputStream'
+     #3 异步到全局队列里面,把'inputStream'和'outputStream'预定到当前的runloop中,开启io流,当'inputStream'和'outputStream'有合法空间时,将'inputStream'以每份1024字节读取,写到'outputStream'.完成后关闭'inputStream'及'outputStream',调用完成回调
+     #4 将'request'可变拷贝一份,将其'HTTPBodyStream'置空,返回'request'
+     */
     NSParameterAssert(request.HTTPBodyStream);
     NSParameterAssert([fileURL isFileURL]);
 
@@ -475,6 +535,14 @@ forHTTPHeaderField:(NSString *)field
                                withParameters:(id)parameters
                                         error:(NSError *__autoreleasing *)error
 {
+    /**
+     序列化请求和参数的过程
+     #1 检查参数
+     #2 设置HTTP请求头'HTTPRequestHeaders'
+     #3 获取请求参数序列化后的字符串'query'(由'queryStringSerialization'这个block获取,或内置的'AFQueryStringFromParameters'函数获取)
+     #4 如果HTTPMethod是'GET'/'HEAD'/'DELETE',把请求参数编码续接在URL后面,其他以当前设置的编码编码为'NSData'的格式设置在'HTTPBody'
+     #5 返回请求
+     */
     NSParameterAssert(request);
 
     NSMutableURLRequest *mutableRequest = [request mutableCopy];
@@ -509,6 +577,9 @@ forHTTPHeaderField:(NSString *)field
 
     if ([self.HTTPMethodsEncodingParametersInURI containsObject:[[request HTTPMethod] uppercaseString]]) {
         if (query && query.length > 0) {
+            // 如果当前的'URL'已经有请求参数,则拼接的时候需要用'&',否则用'?'
+            // '&' 不同参数的间隔符
+            // '?' 分隔实际的URL和参数
             mutableRequest.URL = [NSURL URLWithString:[[mutableRequest.URL absoluteString] stringByAppendingFormat:mutableRequest.URL.query ? @"&%@" : @"?%@", query]];
         }
     } else {

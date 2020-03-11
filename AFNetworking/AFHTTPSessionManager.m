@@ -116,6 +116,9 @@
 @dynamic securityPolicy;
 
 - (void)setSecurityPolicy:(AFSecurityPolicy *)securityPolicy {
+    /**
+     在基础URL不是安全的链接却使用'AFSSLPinningModeCertificate'或'AFSSLPinningModePublicKey'等安全认证策略的时候,抛出异常
+     */
     if (securityPolicy.SSLPinningMode != AFSSLPinningModeNone && ![self.baseURL.scheme isEqualToString:@"https"]) {
         NSString *pinningMode = @"Unknown Pinning Mode";
         switch (securityPolicy.SSLPinningMode) {
@@ -131,7 +134,16 @@
 }
 
 #pragma mark -
-
+/**
+ 实现'GET'/'POST'等HTTP方法,都是在'NSURLSessionDataTask'的构建方法的基础上去拓展
+ - HTTPMethod HTTP方法
+ - URLString 请求链接
+ - parameters 请求参数
+ - uploadProgress 上传进度回调
+ - downloadProgre 下载进度回调
+ - success 成功回调
+ - failure 失败回调
+ */
 - (NSURLSessionDataTask *)GET:(NSString *)URLString
                    parameters:(id)parameters
                       success:(void (^)(NSURLSessionDataTask *task, id responseObject))success
@@ -287,6 +299,12 @@
                                          success:(void (^)(NSURLSessionDataTask *, id))success
                                          failure:(void (^)(NSURLSessionDataTask *, NSError *))failure
 {
+    /**
+     HTTP请求的关键
+     #1 将传入的HTTP方法/链接/参数序列化为'NSURLRequest'
+     #2 检查是否序列化请求过程中是否出现错误,若出错则调用失败回调,返回空的'NSURLSessionDataTask'
+     #3 若请求序列化过程中没有出错,则将生成的'NSURLRequest'传入父类方法'dataTaskWithRequest:uploadProgress:downloadProgress:completionHandler:',生成对应的'dataTask'返回
+     */
     NSError *serializationError = nil;
     NSMutableURLRequest *request = [self.requestSerializer requestWithMethod:method URLString:[[NSURL URLWithString:URLString relativeToURL:self.baseURL] absoluteString] parameters:parameters error:&serializationError];
     if (serializationError) {
