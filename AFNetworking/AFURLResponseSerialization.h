@@ -243,6 +243,28 @@ NS_ASSUME_NONNULL_BEGIN
 /**
  Whether to automatically inflate response image data for compressed formats (such as PNG or JPEG). Enabling this can significantly improve drawing performance on iOS when used with `setCompletionBlockWithSuccess:failure:`, as it allows a bitmap representation to be constructed in the background rather than on the main thread. `YES` by default.
  */
+/**
+ 使用 AFNetworking 请求显示图片的时候会用 AFImageResponseSerializer 对服务器返回的数据进行序列化。
+ AFImageResponseSerializer 有一个属性 automaticallyInflatesResponseImage 控制是否自动对压缩格式的 PNG 或者 JPEG 格式的图片进行解压缩，如果允许的话将会显著的提升 iOS 的绘制性能，因为它会在后台构建 bitmap，而不是在主线程，默认为 YES。
+
+ @property (nonatomic, assign) BOOL automaticallyInflatesResponseImage;
+ 下面根据这个主动解压缩的功能，说一下下面几个问题：
+
+ 为什么要解压缩呢？
+ 怎样提高绘制性能？
+ 解压缩过程是怎样的？
+ 
+ 为什么要解压缩
+ PNG 和 JPEG 的图片在网络上传输前会被压缩，通过压缩格式进行传输，移动端需要将获取的数据解压成 bitmap 之后才能显示在屏幕上。如果将获取到的 UIImage 直接赋值给 UIImageView，在渲染之前底层会对 UIImage 进行判断是否有解压，是否有 bitmap 数据，如果没有就会在主线程对图片进行解压缩。这个解压缩的过程是比较耗时的，如果在主线程则可能会导致 UI 卡顿的问题。
+
+ 怎样提高性能
+ AFImageResponseSerializer 是通过把解压过程放到子线程（而非主线程）来提高的绘制性能的。在 AFURLSessionManager 中有一个专门的线程来处理接收到的网络数据，解压缩过程也是在这个线程中。在主线程使用解压后的 UIImage 就省略了解压的步骤，减少在主线程的负担。
+
+ 解压过程是怎样的？
+ 具体实现在 AFInflatedImageFromResponseWithDataAtScale 方法中。解压过程为：创建一个跟图片同样大小的 bitmap 画布，将 UIImage 绘制在画布中，再从画布中获取 UIImage，然后返回给上层。
+
+ 在解压过程中，如果图片为动图，或者像素大于 1024 * 1024，或者 bitmap 图像的单个颜色的位数大于8，就直接返回未解压的图片，这样可以防止占用过多内存，因为解压后的 UIImage 将会一直占用内存。
+ */
 @property (nonatomic, assign) BOOL automaticallyInflatesResponseImage;
 #endif
 

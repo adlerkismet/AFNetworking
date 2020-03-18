@@ -1290,7 +1290,10 @@ typedef enum {
 @end
 
 #pragma mark -
-
+/**
+ "AFJSONRequestSerializer"是"AFHTTPRequestSerializer"的子类
+ 重写了"-requestBySerialization:withParameters:error:"及添加"writingOptions"属性
+ */
 @implementation AFJSONRequestSerializer
 
 + (instancetype)serializer {
@@ -1312,13 +1315,21 @@ typedef enum {
                                         error:(NSError *__autoreleasing *)error
 {
     NSParameterAssert(request);
-
+    // 如果是"GET"/"HEAD"/"DELETE"等需要把参数编码在"URI"上的HTTPMethod使用父类的请求格式化方法
     if ([self.HTTPMethodsEncodingParametersInURI containsObject:[[request HTTPMethod] uppercaseString]]) {
         return [super requestBySerializingRequest:request withParameters:parameters error:error];
     }
 
     NSMutableURLRequest *mutableRequest = [request mutableCopy];
 
+    /**
+     格式化为JSON请求的过程
+     #1 复制原请求的请求头
+     #2 若参数不为空,检查"Content-Type"是否为空,若为空,设置为"application/json"
+     #3 检查参数是否是合法的JSON对象
+     #4 将参数使用系统的"NSJSONSerialization"的"+dataWithJSONObject:options:error:"序列化为"NSData*"的形式,若没有出错,设置为"request"的"HTTPBody"
+     #5 返回格式化之后的请求
+     */
     [self.HTTPRequestHeaders enumerateKeysAndObjectsUsingBlock:^(id field, id value, BOOL * __unused stop) {
         if (![request valueForHTTPHeaderField:field]) {
             [mutableRequest setValue:value forHTTPHeaderField:field];
@@ -1404,6 +1415,13 @@ typedef enum {
                                withParameters:(id)parameters
                                         error:(NSError *__autoreleasing *)error
 {
+    /**
+     类似"JSON"请求的格式化过程
+     #1 检查参数,检查"HTTPMethod"
+     #2 拷贝一个新的请求,设置请求头
+     #3 检查"Content-Type",设置"application/x-plist"
+     #4 将"parameters"格式化为"NSData*"形式,设为"HTTPBody"
+     */
     NSParameterAssert(request);
 
     if ([self.HTTPMethodsEncodingParametersInURI containsObject:[[request HTTPMethod] uppercaseString]]) {

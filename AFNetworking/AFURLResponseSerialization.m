@@ -109,6 +109,11 @@ static id AFJSONObjectByRemovingKeysWithNullValues(id JSONObject, NSJSONReadingO
                     data:(NSData *)data
                    error:(NSError * __autoreleasing *)error
 {
+    /**
+     验证HTTP响应是否合法过程
+     #1 验证响应是否存在,响应类型是否正确,是否有响应内容("data"),响应的"Content-Type"是否在定义的可接受响应的集合之中
+     #2 验证响应的响应码是否在可接受的范围内
+     */
     BOOL responseIsValid = YES;
     NSError *validationError = nil;
 
@@ -234,6 +239,14 @@ static id AFJSONObjectByRemovingKeysWithNullValues(id JSONObject, NSJSONReadingO
                            data:(NSData *)data
                           error:(NSError *__autoreleasing *)error
 {
+    /**
+     JSON响应的序列化过程(其他XML/x-plist等序列化过程类似,都是先验证HTTP响应再序列化为指定对象)
+     #1 验证HTTP响应是否合法(判断可接受响应类型是否一致,判断响应码)
+     #2 判断响应内容是否为空
+     #3 将响应内容("data")序列化为JSON对象
+     #4 根据序列器的"removesKeysWithNullValues"属性,判断是否要去除JSON对象中的空值对象
+     #5 返回序列化完的JSON对象
+     */
     if (![self validateResponse:(NSHTTPURLResponse *)response data:data error:error]) {
         if (!error || AFErrorOrUnderlyingErrorHasCodeInDomain(*error, NSURLErrorCannotDecodeContentData, AFURLResponseSerializationErrorDomain)) {
             return nil;
@@ -532,6 +545,9 @@ static NSLock* imageLock = nil;
 @implementation UIImage (AFNetworkingSafeImageLoading)
 
 + (UIImage *)af_safeImageWithData:(NSData *)data {
+    /**
+     UIImage的"-imageWithData:"非线程安全,为了不引起奔溃,加锁
+     */
     UIImage* image = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -556,6 +572,9 @@ static UIImage * AFImageWithDataAtScale(NSData *data, CGFloat scale) {
 }
 
 static UIImage * AFInflatedImageFromResponseWithDataAtScale(NSHTTPURLResponse *response, NSData *data, CGFloat scale) {
+    /**
+     具体实现在"AFInflatedImageFromResponseWithDataAtScale" 方法中。解压过程为：创建一个跟图片同样大小的 bitmap 画布，将 UIImage 绘制在画布中，再从画布中获取 UIImage，然后返回给上层。
+     */
     if (!data || [data length] == 0) {
         return nil;
     }
@@ -584,6 +603,7 @@ static UIImage * AFInflatedImageFromResponseWithDataAtScale(NSHTTPURLResponse *r
 
     UIImage *image = AFImageWithDataAtScale(data, scale);
     if (!imageRef) {
+        // 如果图片为动图,直接返回未解压的图片
         if (image.images || !image) {
             return image;
         }
@@ -597,7 +617,7 @@ static UIImage * AFInflatedImageFromResponseWithDataAtScale(NSHTTPURLResponse *r
     size_t width = CGImageGetWidth(imageRef);
     size_t height = CGImageGetHeight(imageRef);
     size_t bitsPerComponent = CGImageGetBitsPerComponent(imageRef);
-
+    // 像素大于 1024 * 1024，或者 bitmap 图像的单个颜色的位数大于8，就直接返回未解压的图片,这样可以防止占用过多内存，因为解压后的 UIImage 将会一直占用内存。
     if (width * height > 1024 * 1024 || bitsPerComponent > 8) {
         CGImageRelease(imageRef);
 
@@ -684,6 +704,14 @@ static UIImage * AFInflatedImageFromResponseWithDataAtScale(NSHTTPURLResponse *r
 
 #if TARGET_OS_IOS || TARGET_OS_TV || TARGET_OS_WATCH
     if (self.automaticallyInflatesResponseImage) {
+        /**
+         ## 为什么要解压缩?
+         PNG 和 JPEG的图片在网络上传输前会被压缩，通过压缩格式进行传输，移动端需要将获取的数据解压成 bitmap 之后才能显示在屏幕上。如果将获取到的 UIImage 直接赋值给 UIImageView，在渲染之前底层会对 UIImage 进行判断是否有解压，是否有 bitmap 数据，如果没有就会在主线程对图片进行解压缩。这个解压缩的过程是比较耗时的，如果在主线程则可能会导致 UI 卡顿的问题。
+
+         ## 如何提高性能?
+         提前在子线程解压缩,使返回的"UIImage"对象已经是解压缩好的,拥有"bitmap"数据
+         "AFImageResponseSerializer" 是通过把解压过程放到子线程（而非主线程）来提高的绘制性能的。在"AFURLSessionManager" 中有一个专门的线程来处理接收到的网络数据，解压缩过程也是在这个线程中。在主线程使用解压后的 UIImage 就省略了解压的步骤，减少在主线程的负担。
+         */
         return AFInflatedImageFromResponseWithDataAtScale((NSHTTPURLResponse *)response, data, self.imageScale);
     } else {
         return AFImageWithDataAtScale(data, self.imageScale);
@@ -747,7 +775,10 @@ static UIImage * AFInflatedImageFromResponseWithDataAtScale(NSHTTPURLResponse *r
 @end
 
 #pragma mark -
-
+/**
+ 混合的多种响应的序列器
+ 可传入多个响应序列器,用遍历的方式寻找到合适的遍历器,如果找到一个能正确解析的则立马返回解析后结果,如果所有响应序列器都无法解析,调用父类的"-responseObjectForResponse:data:error:"方法尝试进行解析
+ */
 @interface AFCompoundResponseSerializer ()
 @property (readwrite, nonatomic, copy) NSArray *responseSerializers;
 @end
