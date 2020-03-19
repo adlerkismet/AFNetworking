@@ -130,7 +130,14 @@ static inline BOOL AFStateTransitionIsValid(AFOperationState fromState, AFOperat
 
 @interface AFURLConnectionOperation ()
 @property (readwrite, nonatomic, assign) AFOperationState state;
+/**
+ 递归锁，在所有会访问/修改成员变量的对外接口都加了锁，因为这些对外的接口用户是可以在任意线程调用的，对于访问和修改成员变量的接口，必须用锁保证线程安全。
+ */
 @property (readwrite, nonatomic, strong) NSRecursiveLock *lock;
+/**
+ AFNetWorking2.X的实现方法
+ 用一个"NSOperation"持有"NSURLConnection",且实现了"NSURLConnectionDelegate", "NSURLConnectionDataDelegate"协议,将每一个请求都包装成一个"NSOperation",且建立了一个子线程,实现了"NSURLConnection"在子线程调用异步接口,且其回调和"outputStream"都是在子线程里面完成.
+ */
 @property (readwrite, nonatomic, strong) NSURLConnection *connection;
 @property (readwrite, nonatomic, strong) NSURLRequest *request;
 @property (readwrite, nonatomic, strong) NSURLResponse *response;
@@ -153,9 +160,40 @@ static inline BOOL AFStateTransitionIsValid(AFOperationState fromState, AFOperat
 
 @implementation AFURLConnectionOperation
 @synthesize outputStream = _outputStream;
+/**
+ A.在主线程异步回调
+ 若直接在主线程异步回调会存在两个问题：
+ [[NSURLConnection alloc] initWithRequest:request delegate:self startImmediately:YES]
+ 
+ 1、当在主线程调用上面的初始化方法时，监听回调的任务会加入到主线程的 Runloop 下，主线程的Runloop默认的 RunloopMode 是 NSDefaultRunLoopMode。当用户滑动 scrollview 时，RunloopMode会切换到 NSEventTrackingRunLoopMode 模式，这个时候回调函数就不会执行了，直到用户停止滑动。
+ 这个问题可以通过如下方法来解决：
+ NSURLConnection *connection = [[NSURLConnection alloc] initWithRequest:request delegate:self startImmediately:NO];
+ //设置 RunloopMode 为 NSRunLoopCommonModes（即使用户滑动 scrollview 也能即时执行回调函数）
+ [connection scheduleInRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
+ [connection start];
+ 
+ 2、作为网络层框架，在 NSURLConnection 回调回来之后，必定要对 Response 做一些诸如序列化、错误处理的操作的。这些通用操作势必要放在子线程去做掉，接着回到主线程，框架的使用者只需要拿到处理后的 Response 进行UI 刷新即可。（PASS）
 
+ B.一个请求一条线程
+ 来一个请求开辟一条线程，设置runloop保活线程，等待结果回调。这种方式理论上是可行的，但是你也看到了，线程开销太大了。（PASS）
+
+ C.一条常驻线程
+ 只开辟一条子线程，设置runloop使线程常驻。所有的请求在这个线程上发起、同时也在这个线程上回调。
+ 
+ 为何该网络请求框架实现不是单线程?
+ 该常驻线程只负责处理每个"AFHTTPRequestOperation"实例对象的生成和回调过程,具体每个"AFHTTPRequestOperation"中"Connection"的请求过程并不在该常驻线程中.
+ 首先，每一个请求对应一个AFHTTPRequestOperation实例对象（以下简称operation），每一个operation在初始化完成后都会被添加到一个NSOperationQueue中。
+ 由这个NSOperationQueue来控制并发，系统会根据当前可用的核心数以及负载情况动态地调整最大的并发 operation 数量，我们也可以通过setMaxConcurrentoperationCount:方法来设置最大并发数。注意：并发数并不等于所开辟的线程数。具体开辟几条线程由系统决定。
+
+ 也就是说此处执行operation是并发的、多线程的。
+ */
+/**
+ 需要常驻子线程的原因
+ "NSURLConnection"发起请求后，这条线程并不能随风而去，而需要一直处于等待回调的状态。
+ */
 + (void)networkRequestThreadEntryPoint:(id)__unused object {
     @autoreleasepool {
+        // 给该子线程设置名字,开启子线程对应的"runloop",添加一个"port"使其保持活跃状态
         [[NSThread currentThread] setName:@"AFNetworking"];
 
         NSRunLoop *runLoop = [NSRunLoop currentRunLoop];
@@ -165,6 +203,7 @@ static inline BOOL AFStateTransitionIsValid(AFOperationState fromState, AFOperat
 }
 
 + (NSThread *)networkRequestThread {
+    // 生成且启动一个子线程
     static NSThread *_networkRequestThread = nil;
     static dispatch_once_t oncePredicate;
     dispatch_once(&oncePredicate, ^{
@@ -320,6 +359,10 @@ static inline BOOL AFStateTransitionIsValid(AFOperationState fromState, AFOperat
 #pragma mark -
 
 - (void)setState:(AFOperationState)state {
+    /**
+     状态机
+     通过KVO的方式告知外界当前"state"的变化
+     */
     if (!AFStateTransitionIsValid(self.state, state, [self isCancelled])) {
         return;
     }
